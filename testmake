@@ -1,0 +1,66 @@
+import cv2
+import numpy as np
+import mediapipe as mp
+
+# 미디어파이프 핸드 모듈 초기화
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.5)
+mp_drawing = mp.solutions.drawing_utils
+
+# 저장할 데이터를 담을 리스트
+action = 'hello'
+data = []
+
+# 웹캠 입력 시작
+cap = cv2.VideoCapture(0)
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # BGR을 RGB로 변환
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image.flags.writeable = False
+    results = hands.process(image)
+
+    # 다시 BGR로 변환
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    if results.multi_hand_landmarks:
+        # 한 프레임에서의 좌표값 저장용
+        frame_landmarks = []
+
+        for hand_landmarks in results.multi_hand_landmarks:
+            # 각 랜드마크 좌표 추출 (x, y, z)
+            for lm in hand_landmarks.landmark:
+                frame_landmarks.extend([lm.x, lm.y, lm.z])
+
+            # 랜드마크 시각화
+            mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+        # 좌표값이 양손(42개의 랜드마크 * 3차원 좌표)으로 채워지지 않으면 0으로 채움
+        if len(frame_landmarks) < 42 * 3:
+            frame_landmarks.extend([0.0] * (42 * 3 - len(frame_landmarks)))
+
+        # 액션을 label로 추가
+        frame_landmarks.append(action)
+
+        # 데이터에 추가
+        data.append(frame_landmarks)
+
+    # 화면에 출력
+    cv2.imshow('MediaPipe Hands', image)
+
+    if cv2.waitKey(10) & 0xFF == ord('q'):
+        break
+
+# 데이터 numpy 배열로 변환
+data = np.array(data)
+
+# npy 파일로 저장
+np.save(f'{action}_hand_data.npy', data)
+
+cap.release()
+cv2.destroyAllWindows()

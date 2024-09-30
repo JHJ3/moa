@@ -1,0 +1,129 @@
+import cv2
+import numpy as np
+import tensorflow as tf
+import mediapipe as mp
+
+# 미디어파이프 핸드 모듈 초기화
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=2, min_detection_confidence=0.5)
+mp_drawing = mp.solutions.drawing_utils
+
+# 액션 라벨 매핑
+action_label_map = {0: 'hello', 1: 'meet'}
+actions = ['hello', 'meet']
+seq_length = 30
+
+data_dict = {action: [] for action in actions}
+
+# 모델 로드 (모델 경로를 수정해야 합니다)
+model = tf.keras.models.load_model('sign_language_model.keras')
+
+cap = cv2.VideoCapture(0)
+
+seq = []
+action_seq = []
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image.flags.writeable = False
+    results = hands.process(image)
+
+    # 다시 BGR로 변환
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    # 각 손의 랜드마크 처리
+    x_values = []
+    y_values = []
+    z_values = []
+    angles = []  # 각도 값 저장용
+
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            joint = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+
+            # 랜드마크 그리기
+            mp_drawing.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+            # 부모-자식 관절 설정
+            v1 = joint[[0, 1, 2, 3, 0, 5, 6, 7, 0, 9, 10, 11, 0, 13, 14, 15, 0, 17, 18, 19], :3]
+            v2 = joint[[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20], :3]
+
+            # 벡터 계산 및 정규화
+            v = v2 - v1
+            v = v / np.linalg.norm(v, axis=1)[:, np.newaxis]
+
+            # 각도 계산
+            angle = np.arccos(np.einsum('nt,nt->n',
+                                        v[[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 18], :],
+                                        v[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19], :]))
+            angle = np.degrees(angle)
+
+            # 랜드마크 좌표 저장
+            for lm in hand_landmarks.landmark:
+                x_values.append(lm.x)
+                y_values.append(lm.y)
+                z_values.append(lm.z)
+
+            angles.extend(angle.tolist())
+
+    # 랜드마크가 감지되지 않은 경우 0으로 채움
+    if len(x_values) == 0:
+        x_values = [0.0] * 21
+        y_values = [0.0] * 21
+        z_values = [0.0] * 21
+        angles = [0.0] * 30
+
+    # 랜드마크가 42개가 되도록 0으로 채움
+    while len(x_values) < 21:
+        x_values.append(0.0)
+    while len(y_values) < 21:
+        y_values.append(0.0)
+    while len(z_values) < 21:
+        z_values.append(0.0)
+
+    # 각도 값이 없는 경우 0으로 채움
+    while len(angles) < 30:
+        angles.append(0.0)
+
+    # 데이터에 추가
+    frame_data = x_values + y_values + z_values + angles
+    if len(frame_data) == 156:  # 21 + 21 + 21 + 30 = 156
+        seq.append(frame_data)
+
+    # 예측 입력 데이터 준비
+    if len(seq) >= seq_length:
+        input_data = np.expand_dims(np.array(seq[-seq_length:], dtype=np.float32), axis=0)
+        y_pred = model.predict(input_data).squeeze()
+
+        i_pred = int(np.argmax(y_pred))
+        conf = y_pred[i_pred]
+
+        if conf < 0.9:
+            continue
+
+        action = actions[i_pred]
+        action_seq.append(action)
+
+        if len(action_seq) < 3:
+            continue
+
+        this_action = '?'
+        if action_seq[-1] == action_seq[-2] == action_seq[-3]:
+            this_action = action
+
+        # 현재 액션을 화면에 표시
+        cv2.putText(frame, f'{this_action.upper()}',
+                    org=(10, 30),
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=1, color=(255, 255, 255), thickness=2)
+
+    cv2.imshow('img', frame)
+    if cv2.waitKey(1) == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
